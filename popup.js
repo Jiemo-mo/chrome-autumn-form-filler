@@ -454,13 +454,13 @@ async function importResumeFiles(event) {
 
   for (const file of files) {
     const ext = file.name.split(".").pop().toLowerCase();
-    if (!["txt", "md", "json"].includes(ext)) {
+    if (!["txt", "md", "json", "pdf", "docx"].includes(ext)) {
       unsupported.push(file.name);
       continue;
     }
 
     try {
-      const text = await readFileAsText(file);
+      const text = await extractResumeText(file, ext);
       const jsonData = ext === "json" ? JSON.parse(text) : null;
       const parsed = jsonData ? mergeProfile(createDefaultProfile(), jsonData.profile || jsonData) : parseResumeText(text);
       const version = createProfileVersion(file.name.replace(/\.[^.]+$/, ""), parsed);
@@ -480,8 +480,16 @@ async function importResumeFiles(event) {
 
   const messages = [];
   if (imported) messages.push(`已解析 ${imported} 份简历为本地资料版本`);
-  if (unsupported.length) messages.push(`未解析：${unsupported.join("、")}。请先另存为 txt/md，或导出插件 JSON。`);
+  if (unsupported.length) messages.push(`未解析：${unsupported.join("、")}。扫描版 PDF 或复杂版式可能无法提取文本。`);
   setStatus(messages.join("；") || "未导入任何文件", imported ? "ok" : "err");
+}
+
+async function extractResumeText(file, ext) {
+  if (ext === "txt" || ext === "md" || ext === "json") return readFileAsText(file);
+  const buffer = await readFileAsArrayBuffer(file);
+  const text = ext === "docx" ? await extractDocxText(buffer) : await extractPdfText(buffer);
+  if (!text.trim()) throw new Error("no text extracted");
+  return text;
 }
 
 function readFileAsText(file) {
@@ -491,6 +499,159 @@ function readFileAsText(file) {
     reader.onerror = reject;
     reader.readAsText(file);
   });
+}
+
+function readFileAsArrayBuffer(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+async function extractDocxText(buffer) {
+  const files = await readZipFiles(buffer);
+  const documentXml = files["word/document.xml"];
+  if (!documentXml) throw new Error("document.xml not found");
+  const xml = new TextDecoder("utf-8").decode(documentXml);
+  return xml
+    .replace(/<w:tab\/>/g, "\t")
+    .replace(/<\/w:p>/g, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+async function readZipFiles(buffer) {
+  const view = new DataView(buffer);
+  const bytes = new Uint8Array(buffer);
+  const files = {};
+  let offset = 0;
+
+  while (offset < bytes.length - 30) {
+    if (view.getUint32(offset, true) !== 0x04034b50) {
+      offset += 1;
+      continue;
+    }
+
+    const method = view.getUint16(offset + 8, true);
+    const compressedSize = view.getUint32(offset + 18, true);
+    const fileNameLength = view.getUint16(offset + 26, true);
+    const extraLength = view.getUint16(offset + 28, true);
+    const nameStart = offset + 30;
+    const nameEnd = nameStart + fileNameLength;
+    const dataStart = nameEnd + extraLength;
+    const dataEnd = dataStart + compressedSize;
+    const name = new TextDecoder("utf-8").decode(bytes.slice(nameStart, nameEnd));
+
+    if (dataEnd > bytes.length || compressedSize < 0) break;
+    const compressed = bytes.slice(dataStart, dataEnd);
+    if (!name.endsWith("/")) {
+      files[name] = method === 0 ? compressed : await inflateRaw(compressed);
+    }
+    offset = dataEnd;
+  }
+
+  return files;
+}
+
+async function extractPdfText(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const raw = bytesToBinaryString(bytes);
+  const chunks = [];
+
+  for (const match of raw.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)) {
+    const stream = binaryStringToBytes(match[1]);
+    const before = raw.slice(Math.max(0, match.index - 220), match.index);
+    let decoded = "";
+    try {
+      const data = /\/FlateDecode/.test(before) ? await inflateZlib(stream) : stream;
+      decoded = bytesToBinaryString(data);
+    } catch {
+      decoded = bytesToBinaryString(stream);
+    }
+    chunks.push(extractPdfStrings(decoded));
+  }
+
+  chunks.push(extractPdfStrings(raw));
+  return chunks.join("\n").replace(/\s{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function extractPdfStrings(text) {
+  const parts = [];
+  for (const match of text.matchAll(/\((?:\\.|[^\\)])*\)/g)) {
+    const value = decodePdfLiteral(match[0].slice(1, -1));
+    if (isUsefulPdfText(value)) parts.push(value);
+  }
+  for (const match of text.matchAll(/<([0-9A-Fa-f]{4,})>/g)) {
+    const value = decodePdfHex(match[1]);
+    if (isUsefulPdfText(value)) parts.push(value);
+  }
+  return parts.join("\n");
+}
+
+function decodePdfLiteral(value) {
+  return value
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\([()\\])/g, "$1")
+    .replace(/\\(\d{1,3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)))
+    .trim();
+}
+
+function decodePdfHex(hex) {
+  const clean = hex.length % 2 ? `${hex}0` : hex;
+  const bytes = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < clean.length; i += 2) {
+    bytes[i / 2] = parseInt(clean.slice(i, i + 2), 16);
+  }
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(bytes.slice(2)).trim();
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(bytes.slice(2)).trim();
+  return new TextDecoder("utf-8").decode(bytes).trim();
+}
+
+function isUsefulPdfText(value) {
+  const text = value.replace(/\s+/g, "");
+  return text.length >= 2 && /[\u4e00-\u9fa5A-Za-z0-9@]/.test(text);
+}
+
+async function inflateRaw(bytes) {
+  try {
+    return await decompressBytes(bytes, "deflate-raw");
+  } catch {
+    return decompressBytes(bytes, "deflate");
+  }
+}
+
+async function inflateZlib(bytes) {
+  return decompressBytes(bytes, "deflate");
+}
+
+async function decompressBytes(bytes, format) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream(format));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+function bytesToBinaryString(bytes) {
+  let result = "";
+  const size = 0x8000;
+  for (let i = 0; i < bytes.length; i += size) {
+    result += String.fromCharCode(...bytes.subarray(i, i + size));
+  }
+  return result;
+}
+
+function binaryStringToBytes(text) {
+  const bytes = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i += 1) bytes[i] = text.charCodeAt(i) & 0xff;
+  return bytes;
 }
 
 function createProfileVersion(name, parsedProfile) {
