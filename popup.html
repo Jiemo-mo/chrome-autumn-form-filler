@@ -204,6 +204,12 @@
       grid-column: 1 / -1;
     }
 
+    textarea[data-key="markdown"] {
+      min-height: 180px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+    }
+
     input:focus, textarea:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 2px rgba(23, 105, 224, .12);
@@ -244,6 +250,42 @@
     #status.ok { color: var(--ok); }
     #status.err { color: var(--danger); }
 
+    .preview-card {
+      margin: 10px 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+
+    .preview-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--line);
+      font-weight: 700;
+    }
+
+    .preview-meta {
+      color: var(--muted);
+      font-weight: 400;
+      font-size: 12px;
+    }
+
+    #versionPreview {
+      max-height: 150px;
+      margin: 0;
+      padding: 10px 12px;
+      overflow: auto;
+      color: var(--text);
+      background: #fbfcfe;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 12px/1.5 Consolas, "Courier New", monospace;
+    }
+
     input[type="file"] { display: none; }
   </style>
 </head>
@@ -269,7 +311,8 @@
     <div class="actions">
       <button id="sidebarBtn" class="primary" type="button">打开安全侧边栏</button>
       <label class="file-label" for="resumeFiles">解析简历</label>
-      <input id="resumeFiles" type="file" multiple accept=".txt,.md,.json,.pdf,.docx,application/json,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+      <input id="resumeFiles" type="file" multiple accept=".txt,.md,.json,.docx,application/json,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+      <button id="exportMarkdownBtn" type="button">导出 Markdown</button>
       <button id="exportBtn" type="button">导出 JSON</button>
       <label class="file-label" for="importFile">导入 JSON</label>
       <input id="importFile" type="file" accept="application/json,.json">
@@ -283,7 +326,15 @@
       </details>
     </div>
     <div id="status" aria-live="polite"></div>
-    <p class="note">简历解析仅在本地浏览器完成；支持 txt/md/json/pdf/docx。扫描版 PDF 可能无法提取文本。</p>
+    <p class="note">简历解析仅在本地浏览器完成；支持 txt/md/json/docx。PDF 请先复制正文为 txt 或转为 docx 后导入。</p>
+
+    <section class="preview-card" aria-label="当前版本预览">
+      <div class="preview-head">
+        <span>当前版本预览</span>
+        <span id="versionPreviewMeta" class="preview-meta"></span>
+      </div>
+      <pre id="versionPreview">暂无内容。上传或选择一个简历版本后，这里会显示解析出的 Markdown 原文。</pre>
+    </section>
 
     <form id="profileForm" autocomplete="off">
       <div id="sections"></div>

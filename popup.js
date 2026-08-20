@@ -65,6 +65,12 @@ const sections = [
     title: "自我评价",
     type: "object",
     fields: [["summary", "自我评价"], ["strengths", "个人优势"], ["careerPlan", "职业规划"]]
+  },
+  {
+    key: "source",
+    title: "简历原文",
+    type: "object",
+    fields: [["markdown", "解析出的 Markdown 原文"]]
   }
 ];
 
@@ -124,6 +130,7 @@ function normalizeProfileVersions(storedVersions, legacyProfile) {
       name: String(item.name),
       createdAt: item.createdAt || new Date().toISOString(),
       updatedAt: item.updatedAt || new Date().toISOString(),
+      markdown: item.markdown || "",
       profile: mergeProfile(createDefaultProfile(), item.profile)
     }));
 
@@ -133,6 +140,7 @@ function normalizeProfileVersions(storedVersions, legacyProfile) {
       name: "默认资料",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      markdown: "",
       profile: mergeProfile(createDefaultProfile(), legacyProfile || {})
     });
   }
@@ -142,13 +150,16 @@ function normalizeProfileVersions(storedVersions, legacyProfile) {
 function loadActiveProfile() {
   const version = profileVersions.find(item => item.id === activeProfileId) || profileVersions[0];
   activeProfileId = version.id;
-  return mergeProfile(createDefaultProfile(), version.profile);
+  const loaded = mergeProfile(createDefaultProfile(), version.profile);
+  if (!loaded.source.markdown && version.markdown) loaded.source.markdown = version.markdown;
+  return loaded;
 }
 
 function syncActiveProfile() {
   const version = profileVersions.find(item => item.id === activeProfileId);
   if (!version) return;
   version.profile = mergeProfile(createDefaultProfile(), profile);
+  version.markdown = profile.source?.markdown || version.markdown || "";
   version.updatedAt = new Date().toISOString();
 }
 
@@ -165,6 +176,24 @@ function renderProfileSelect() {
   }
   const nameInput = document.getElementById("profileNameInput");
   if (nameInput) nameInput.value = getActiveProfileName();
+  renderVersionPreview();
+}
+
+function renderVersionPreview() {
+  const preview = document.getElementById("versionPreview");
+  const meta = document.getElementById("versionPreviewMeta");
+  if (!preview || !meta) return;
+
+  const version = profileVersions.find(item => item.id === activeProfileId);
+  const currentProfile = mergeProfile(createDefaultProfile(), profile);
+  const summary = summarizeProfile(currentProfile);
+  const markdown = currentProfile.source?.markdown || version?.markdown || "";
+  const shown = markdown.trim() || profileToMarkdown(currentProfile);
+
+  meta.textContent = `${getActiveProfileName()} · 结构化字段 ${summary.structuredCount} 项`;
+  preview.textContent = shown.trim()
+    ? shown.trim().slice(0, 1800)
+    : "暂无内容。上传或选择一个简历版本后，这里会显示解析出的 Markdown 原文。";
 }
 
 function render() {
@@ -243,7 +272,7 @@ function renderInput(sectionKey, [key, label], target, index) {
   nodeLabel.htmlFor = id;
   nodeLabel.textContent = label;
 
-  const isLong = ["description", "summary", "strengths", "careerPlan", "courses", "result", "address"].includes(key);
+  const isLong = ["description", "summary", "strengths", "careerPlan", "courses", "result", "address", "markdown"].includes(key);
   const input = document.createElement(isLong ? "textarea" : "input");
   input.id = id;
   input.dataset.section = sectionKey;
@@ -264,6 +293,7 @@ function onInput(event) {
   } else {
     profile[section][Number(index)][key] = event.target.value;
   }
+  renderVersionPreview();
   queueSave();
 }
 
@@ -290,6 +320,7 @@ function bindActions() {
   document.getElementById("sidebarBtn").addEventListener("click", openAssistantSidebar);
   document.getElementById("fillBtn").addEventListener("click", fillCurrentPage);
   document.getElementById("resumeFiles").addEventListener("change", importResumeFiles);
+  document.getElementById("exportMarkdownBtn").addEventListener("click", exportActiveMarkdown);
   document.getElementById("exportBtn").addEventListener("click", exportJson);
   document.getElementById("importFile").addEventListener("change", importJson);
   document.getElementById("clearBtn").addEventListener("click", clearProfile);
@@ -301,8 +332,9 @@ async function switchProfileVersion(event) {
   profile = loadActiveProfile();
   render();
   renderProfileSelect();
-  await saveNow();
-  setStatus(`已切换到：${getActiveProfileName()}`, "ok");
+  renderVersionPreview();
+  await chrome.storage.local.set({ [ACTIVE_PROFILE_KEY]: activeProfileId });
+  setStatus(`已切换到：${getActiveProfileName()}，下方预览和表单已更新。`, "ok");
 }
 
 function renameActiveProfileVersion(event) {
@@ -327,6 +359,7 @@ async function deleteCurrentProfileVersion() {
   profile = loadActiveProfile();
   render();
   renderProfileSelect();
+  renderVersionPreview();
   await saveNow();
   setStatus(`已删除：${name}`, "ok");
 }
@@ -400,6 +433,25 @@ function exportJson() {
   setStatus("已导出 JSON 备份", "ok");
 }
 
+function exportActiveMarkdown() {
+  syncActiveProfile();
+  const version = profileVersions.find(item => item.id === activeProfileId);
+  const markdown = version?.markdown || profileToMarkdown(profile);
+  if (!markdown.trim()) {
+    setStatus("当前版本暂无 Markdown 内容。", "err");
+    return;
+  }
+
+  const blob = new Blob([markdown], { type: "text/markdown" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${sanitizeFileName(getActiveProfileName()) || "resume"}.md`;
+  a.click();
+  URL.revokeObjectURL(url);
+  setStatus("已导出当前版本 Markdown", "ok");
+}
+
 function importJson(event) {
   const file = event.target.files?.[0];
   if (!file) return;
@@ -436,6 +488,7 @@ async function clearProfile() {
     name: "默认资料",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    markdown: "",
     profile
   }];
   activeProfileId = DEFAULT_PROFILE_ID;
@@ -450,26 +503,33 @@ async function importResumeFiles(event) {
   if (!files.length) return;
 
   const unsupported = [];
+  const failedDetails = [];
+  const importedSummaries = [];
   let imported = 0;
 
   for (const file of files) {
     const ext = file.name.split(".").pop().toLowerCase();
-    if (!["txt", "md", "json", "pdf", "docx"].includes(ext)) {
+    if (!["txt", "md", "json", "docx"].includes(ext)) {
       unsupported.push(file.name);
       continue;
     }
 
     try {
-      const text = await extractResumeText(file, ext);
-      const jsonData = ext === "json" ? JSON.parse(text) : null;
-      const parsed = jsonData ? mergeProfile(createDefaultProfile(), jsonData.profile || jsonData) : parseResumeText(text);
-      const version = createProfileVersion(file.name.replace(/\.[^.]+$/, ""), parsed);
+      const markdown = await extractResumeMarkdown(file, ext);
+      const jsonData = ext === "json" ? JSON.parse(markdown) : null;
+      const parsed = jsonData ? mergeProfile(createDefaultProfile(), jsonData.profile || jsonData) : parseResumeText(markdown);
+      parsed.source.markdown = jsonData?.markdown || markdown;
+      const summary = summarizeProfile(parsed);
+      if (!summary.structuredCount && !parsed.source.markdown.trim()) throw new Error("no profile fields parsed");
+      const version = createProfileVersion(file.name.replace(/\.[^.]+$/, ""), parsed, jsonData?.markdown || markdown);
       profileVersions.push(version);
       activeProfileId = version.id;
       profile = mergeProfile(createDefaultProfile(), version.profile);
       imported += 1;
-    } catch {
+      importedSummaries.push(`${version.name}：结构化字段 ${summary.structuredCount} 项，原文 ${parsed.source.markdown.length} 字`);
+    } catch (error) {
       unsupported.push(file.name);
+      failedDetails.push(`${file.name}：${error?.message || "解析失败"}`);
     }
   }
 
@@ -479,17 +539,19 @@ async function importResumeFiles(event) {
   event.target.value = "";
 
   const messages = [];
-  if (imported) messages.push(`已解析 ${imported} 份简历为本地资料版本`);
-  if (unsupported.length) messages.push(`未解析：${unsupported.join("、")}。扫描版 PDF 或复杂版式可能无法提取文本。`);
+  if (imported) messages.push(`已解析 ${imported} 份简历，已切换到最新版本。${importedSummaries.join("；")}。请在下方表单查看/编辑，打开侧边栏前请确认当前资料版本。`);
+  if (unsupported.length) messages.push(`未解析：${unsupported.join("、")}。${failedDetails.join("；")}。当前版本不再直接解析 PDF，请先复制正文为 txt 或转为 docx 后导入。`);
   setStatus(messages.join("；") || "未导入任何文件", imported ? "ok" : "err");
 }
 
-async function extractResumeText(file, ext) {
-  if (ext === "txt" || ext === "md" || ext === "json") return readFileAsText(file);
+async function extractResumeMarkdown(file, ext) {
+  if (ext === "json") return readFileAsText(file);
+  if (ext === "md") return readFileAsText(file);
+  if (ext === "txt") return textToMarkdown(await readFileAsText(file));
   const buffer = await readFileAsArrayBuffer(file);
-  const text = ext === "docx" ? await extractDocxText(buffer) : await extractPdfText(buffer);
-  if (!text.trim()) throw new Error("no text extracted");
-  return text;
+  const markdown = await extractDocxMarkdown(buffer);
+  if (!markdown.trim()) throw new Error("no markdown extracted");
+  return markdown;
 }
 
 function readFileAsText(file) {
@@ -510,22 +572,36 @@ function readFileAsArrayBuffer(file) {
   });
 }
 
-async function extractDocxText(buffer) {
+async function extractDocxMarkdown(buffer) {
   const files = await readZipFiles(buffer);
   const documentXml = files["word/document.xml"];
   if (!documentXml) throw new Error("document.xml not found");
   const xml = new TextDecoder("utf-8").decode(documentXml);
-  return xml
-    .replace(/<w:tab\/>/g, "\t")
-    .replace(/<\/w:p>/g, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;/g, "\"")
-    .replace(/&apos;/g, "'")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const paragraphs = [...doc.getElementsByTagName("*")]
+    .filter(node => node.localName === "p")
+    .map(node => docxParagraphNodeToMarkdown(node))
+    .filter(Boolean);
+  return normalizeMarkdown(paragraphs.join("\n"));
+}
+
+function docxParagraphNodeToMarkdown(node) {
+  const texts = [...node.getElementsByTagName("*")]
+    .filter(child => child.localName === "t")
+    .map(child => child.textContent || "")
+    .join("");
+  const text = texts.replace(/\s+/g, " ").trim();
+  if (!text || looksLikeInternalCode(text)) return "";
+
+  const styleNode = [...node.getElementsByTagName("*")].find(child => child.localName === "pStyle");
+  const style = styleNode?.getAttribute("w:val") || styleNode?.getAttribute("val") || "";
+  const isList = [...node.getElementsByTagName("*")].some(child => child.localName === "numPr");
+  if (/heading1|title|标题1/i.test(style)) return `# ${text}`;
+  if (/heading2|标题2/i.test(style)) return `## ${text}`;
+  if (/heading3|标题3/i.test(style)) return `### ${text}`;
+  if (isResumeHeading(text)) return `## ${text.replace(/[：:]$/, "")}`;
+  if (isList || /^[•·\-*]\s*/.test(text)) return `- ${text.replace(/^[•·\-*]\s*/, "")}`;
+  return text;
 }
 
 async function readZipFiles(buffer) {
@@ -561,77 +637,12 @@ async function readZipFiles(buffer) {
   return files;
 }
 
-async function extractPdfText(buffer) {
-  const bytes = new Uint8Array(buffer);
-  const raw = bytesToBinaryString(bytes);
-  const chunks = [];
-
-  for (const match of raw.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)) {
-    const stream = binaryStringToBytes(match[1]);
-    const before = raw.slice(Math.max(0, match.index - 220), match.index);
-    let decoded = "";
-    try {
-      const data = /\/FlateDecode/.test(before) ? await inflateZlib(stream) : stream;
-      decoded = bytesToBinaryString(data);
-    } catch {
-      decoded = bytesToBinaryString(stream);
-    }
-    chunks.push(extractPdfStrings(decoded));
-  }
-
-  chunks.push(extractPdfStrings(raw));
-  return chunks.join("\n").replace(/\s{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-function extractPdfStrings(text) {
-  const parts = [];
-  for (const match of text.matchAll(/\((?:\\.|[^\\)])*\)/g)) {
-    const value = decodePdfLiteral(match[0].slice(1, -1));
-    if (isUsefulPdfText(value)) parts.push(value);
-  }
-  for (const match of text.matchAll(/<([0-9A-Fa-f]{4,})>/g)) {
-    const value = decodePdfHex(match[1]);
-    if (isUsefulPdfText(value)) parts.push(value);
-  }
-  return parts.join("\n");
-}
-
-function decodePdfLiteral(value) {
-  return value
-    .replace(/\\n/g, "\n")
-    .replace(/\\r/g, "\n")
-    .replace(/\\t/g, "\t")
-    .replace(/\\([()\\])/g, "$1")
-    .replace(/\\(\d{1,3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)))
-    .trim();
-}
-
-function decodePdfHex(hex) {
-  const clean = hex.length % 2 ? `${hex}0` : hex;
-  const bytes = new Uint8Array(clean.length / 2);
-  for (let i = 0; i < clean.length; i += 2) {
-    bytes[i / 2] = parseInt(clean.slice(i, i + 2), 16);
-  }
-  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder("utf-16be").decode(bytes.slice(2)).trim();
-  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder("utf-16le").decode(bytes.slice(2)).trim();
-  return new TextDecoder("utf-8").decode(bytes).trim();
-}
-
-function isUsefulPdfText(value) {
-  const text = value.replace(/\s+/g, "");
-  return text.length >= 2 && /[\u4e00-\u9fa5A-Za-z0-9@]/.test(text);
-}
-
 async function inflateRaw(bytes) {
   try {
     return await decompressBytes(bytes, "deflate-raw");
   } catch {
     return decompressBytes(bytes, "deflate");
   }
-}
-
-async function inflateZlib(bytes) {
-  return decompressBytes(bytes, "deflate");
 }
 
 async function decompressBytes(bytes, format) {
@@ -654,13 +665,14 @@ function binaryStringToBytes(text) {
   return bytes;
 }
 
-function createProfileVersion(name, parsedProfile) {
+function createProfileVersion(name, parsedProfile, markdown = "") {
   const now = new Date().toISOString();
   return {
     id: `profile_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     name: uniqueProfileName(name || "简历资料"),
     createdAt: now,
     updatedAt: now,
+    markdown,
     profile: mergeProfile(createDefaultProfile(), parsedProfile)
   };
 }
@@ -678,6 +690,93 @@ function getActiveProfileName() {
   return profileVersions.find(item => item.id === activeProfileId)?.name || "当前资料";
 }
 
+function summarizeProfile(targetProfile) {
+  const labels = [];
+  let count = 0;
+  let structuredCount = 0;
+
+  for (const section of sections) {
+    const source = targetProfile[section.key];
+    const rows = Array.isArray(source) ? source : [source];
+    for (const row of rows) {
+      for (const [fieldKey, fieldLabel] of section.fields) {
+        if (String(row?.[fieldKey] || "").trim()) {
+          count += 1;
+          if (section.key !== "source") {
+            structuredCount += 1;
+            if (labels.length < 8) labels.push(fieldLabel);
+          }
+        }
+      }
+    }
+  }
+
+  return { count, structuredCount, labels };
+}
+
+function textToMarkdown(text) {
+  const lines = text
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  const markdown = lines.map(line => {
+    const clean = line.replace(/\s+/g, " ").trim();
+    if (isResumeHeading(clean)) return `## ${clean.replace(/[：:]$/, "")}`;
+    if (/^[•·\-*]\s*/.test(clean)) return `- ${clean.replace(/^[•·\-*]\s*/, "")}`;
+    return clean;
+  }).join("\n");
+
+  return normalizeMarkdown(markdown);
+}
+
+function normalizeMarkdown(markdown) {
+  return markdown
+    .split("\n")
+    .map(line => line.trim())
+    .filter(line => line && !looksLikeInternalCode(line))
+    .join("\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function looksLikeInternalCode(line) {
+  const text = String(line || "").trim();
+  if (!text) return false;
+  if (/^<\?xml|<\/?[a-z]+:|<[^>]+>|&lt;\/?[a-z]+:/i.test(text)) return true;
+  if (/(w:document|w:body|w:pPr|w:rPr|mc:Ignorable|xmlns:|mso-|font-family|style=)/i.test(text)) return true;
+  if (/^[{}[\];,.:/"'\\\-\s\dA-Za-z_]+$/.test(text) && !/[一-龥]/.test(text) && text.length > 80) return true;
+  if (/[{};]{4,}/.test(text) && text.length > 60) return true;
+  return false;
+}
+
+function isResumeHeading(text) {
+  return /^(个人信息|基本信息|联系方式|教育经历|教育背景|实习经历|工作经历|项目经历|项目经验|获奖证书|荣誉奖项|技能|专业技能|自我评价|个人评价|校园经历|证书)[:：]?$/.test(text);
+}
+
+function profileToMarkdown(targetProfile) {
+  const lines = ["# 简历资料"];
+  for (const section of sections) {
+    lines.push("", `## ${section.title}`);
+    const source = targetProfile[section.key];
+    const rows = Array.isArray(source) ? source : [source];
+    rows.forEach((row, rowIndex) => {
+      if (rows.length > 1) lines.push("", `### ${section.title} ${rowIndex + 1}`);
+      for (const [fieldKey, fieldLabel] of section.fields) {
+        const value = String(row?.[fieldKey] || "").trim();
+        if (value) lines.push(`- ${fieldLabel}：${value}`);
+      }
+    });
+  }
+  return normalizeMarkdown(lines.join("\n"));
+}
+
+function sanitizeFileName(name) {
+  return String(name).replace(/[\\/:*?"<>|]/g, "_").trim();
+}
+
 function parseResumeText(text) {
   const normalized = text.replace(/\r/g, "\n").replace(/[ \t]+/g, " ");
   const lines = normalized.split("\n").map(line => line.trim()).filter(Boolean);
@@ -689,7 +788,7 @@ function parseResumeText(text) {
   parsed.basic.wechat = labeledValue(normalized, ["微信", "微信号", "Wechat"]);
   parsed.basic.gender = firstMatch(normalized, /(?:^|[，,；;\s])(男|女)(?:$|[，,；;\s])/m);
   parsed.basic.politicalStatus = firstMatch(normalized, /(中共党员|预备党员|共青团员|群众)/);
-  parsed.basic.birthDate = firstMatch(normalized, /\d{4}[./年-]\d{1,2}(?:[./月-]\d{1,2}日?)?/);
+  parsed.basic.birthDate = labeledDate(normalized, ["出生日期", "出生年月", "生日", "出生"]);
   parsed.basic.name = guessName(lines);
   parsed.basic.jobTarget = labeledValue(normalized, ["求职意向", "应聘岗位", "目标岗位", "意向岗位"]);
   parsed.basic.expectedCity = labeledValue(normalized, ["期望城市", "意向城市", "工作地点"]);
@@ -728,7 +827,7 @@ function guessName(lines) {
 }
 
 function parseExperienceRows(block, type) {
-  const rows = splitRows(block).map(row => {
+  const rows = splitExperienceRows(block, type).map(row => {
     if (type === "project") {
       return {
         name: firstMatch(row, /(?:项目名称|项目)[:： ]?([^\n]{2,40})/) || firstUsefulLine(row),
@@ -778,14 +877,42 @@ function sectionBlock(text, starts, stops) {
 function splitRows(block) {
   if (!block) return [];
   return block
-    .split(/\n{2,}|(?=\d{4}[./年-]\d{1,2})|(?=项目名称[:：])|(?=公司[:：])/)
+    .split(/\n{2,}|(?=^#{2,3}\s)|(?=^项目名称[:：])|(?=^公司[:：])/m)
     .map(row => row.trim())
+    .filter(row => row.length > 8);
+}
+
+function splitExperienceRows(block, type) {
+  if (!block) return [];
+  const rows = splitRows(block)
+    .filter(row => !isResumeHeading(row.replace(/^#+\s*/, "")));
+  if (rows.length > 1) return rows;
+
+  const lines = block.split("\n").map(line => line.trim()).filter(Boolean);
+  const starters = [];
+  lines.forEach((line, index) => {
+    const clean = line.replace(/^[-*]\s*/, "");
+    const isProjectStart = type === "project" && /^(项目名称[:：]|[\u4e00-\u9fa5A-Za-z0-9]{2,40}(项目|系统|平台|网站|小程序))/.test(clean);
+    const isInternshipStart = type !== "project" && /([\u4e00-\u9fa5A-Za-z0-9]{2,40}(公司|集团|科技|银行|证券|咨询|事务所|实验室|中心))/.test(clean);
+    if (isProjectStart || isInternshipStart) starters.push(index);
+  });
+
+  if (starters.length <= 1) return rows.length ? rows : [block.trim()].filter(Boolean);
+  return starters.map((start, i) => lines.slice(start, starters[i + 1] || lines.length).join("\n"))
     .filter(row => row.length > 8);
 }
 
 function labeledValue(text, labels) {
   for (const label of labels) {
     const match = text.match(new RegExp(`${label}\\s*[:： ]\\s*([^\\n；;，,]{2,80})`, "i"));
+    if (match) return match[1].trim();
+  }
+  return "";
+}
+
+function labeledDate(text, labels) {
+  for (const label of labels) {
+    const match = text.match(new RegExp(`${label}\\s*[:： ]\\s*(\\d{4}[./年-]\\d{1,2}(?:[./月-]\\d{1,2}日?)?)`, "i"));
     if (match) return match[1].trim();
   }
   return "";

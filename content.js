@@ -814,6 +814,7 @@ function flattenProfileForSidebar(profile, sections, keyword) {
   const groups = [];
 
   for (const section of sections) {
+    if (section.key === "source") continue;
     const source = profile[section.key];
     const rows = Array.isArray(source) ? source : [source];
     const items = [];
