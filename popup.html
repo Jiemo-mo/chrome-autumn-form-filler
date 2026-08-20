@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>秋招网申表单助手</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #172033;
+      --muted: #687386;
+      --line: #d8dee8;
+      --accent: #1769e0;
+      --accent-dark: #0f55bd;
+      --danger: #c83b3b;
+      --ok: #267447;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      width: 430px;
+      max-height: 620px;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      padding: 14px 16px 12px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1 {
+      margin: 0 0 4px;
+      font-size: 17px;
+      line-height: 1.2;
+    }
+
+    .note {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    main {
+      padding: 12px;
+    }
+
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    button, .file-label {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      min-height: 34px;
+      padding: 7px 10px;
+      font: inherit;
+      cursor: pointer;
+      text-align: center;
+    }
+
+    button:hover, .file-label:hover {
+      border-color: #aab5c5;
+    }
+
+    .primary {
+      grid-column: 1 / -1;
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .primary:hover {
+      background: var(--accent-dark);
+      border-color: var(--accent-dark);
+    }
+
+    .secondary {
+      grid-column: 1 / -1;
+      font-weight: 600;
+    }
+
+    .advanced {
+      grid-column: 1 / -1;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      overflow: hidden;
+    }
+
+    .advanced summary {
+      padding: 8px 10px;
+      cursor: pointer;
+      color: var(--muted);
+      user-select: none;
+    }
+
+    .advanced .advanced-body {
+      padding: 0 10px 10px;
+      display: grid;
+      gap: 8px;
+      border-top: 1px solid var(--line);
+    }
+
+    .danger {
+      color: var(--danger);
+    }
+
+    .profile-bar {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto;
+      gap: 8px;
+      margin-bottom: 12px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .profile-bar label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    select {
+      width: 100%;
+      min-height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 8px;
+      color: var(--text);
+      background: #fff;
+      font: inherit;
+    }
+
+    .profile-bar input {
+      min-height: 32px;
+    }
+
+    .section {
+      margin-bottom: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+
+    .section > summary {
+      padding: 10px 12px;
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .body {
+      padding: 0 12px 12px;
+      border-top: 1px solid var(--line);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 10px;
+      margin-top: 10px;
+    }
+
+    label {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    input, textarea {
+      width: 100%;
+      min-height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 8px;
+      color: var(--text);
+      background: #fff;
+      font: inherit;
+      outline: none;
+    }
+
+    textarea {
+      min-height: 72px;
+      resize: vertical;
+      grid-column: 1 / -1;
+    }
+
+    input:focus, textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(23, 105, 224, .12);
+    }
+
+    .full { grid-column: 1 / -1; }
+
+    .record {
+      margin-top: 10px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+    }
+
+    .record-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .mini {
+      min-height: 28px;
+      padding: 4px 8px;
+      font-size: 12px;
+    }
+
+    #status {
+      min-height: 18px;
+      margin: 8px 2px 0;
+      color: var(--muted);
+    }
+
+    #status.ok { color: var(--ok); }
+    #status.err { color: var(--danger); }
+
+    input[type="file"] { display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>秋招网申表单助手</h1>
+    <p class="note">资料仅保存在本机 local storage；填充后请人工核对和提交。</p>
+  </header>
+
+  <main>
+    <div class="profile-bar">
+      <label>
+        当前资料版本
+        <select id="profileSelect"></select>
+      </label>
+      <label>
+        版本名称
+        <input id="profileNameInput" type="text" maxlength="32" placeholder="例如：产品岗简历">
+      </label>
+      <button id="deleteProfileBtn" class="danger" type="button">删除版本</button>
+    </div>
+
+    <div class="actions">
+      <button id="sidebarBtn" class="primary" type="button">打开安全侧边栏</button>
+      <label class="file-label" for="resumeFiles">解析简历</label>
+      <input id="resumeFiles" type="file" multiple accept=".txt,.md,.json,.pdf,.docx,application/json,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+      <button id="exportBtn" type="button">导出 JSON</button>
+      <label class="file-label" for="importFile">导入 JSON</label>
+      <input id="importFile" type="file" accept="application/json,.json">
+      <button id="clearBtn" class="danger" type="button">清空本机资料</button>
+      <details class="advanced">
+        <summary>高级操作</summary>
+        <div class="advanced-body">
+          <button id="fillBtn" class="secondary" type="button">批量填充当前页面</button>
+          <p class="note">建议优先使用安全侧边栏逐项填充；批量填充仍需人工确认，且不会提交、保存或翻页。</p>
+        </div>
+      </details>
+    </div>
+    <div id="status" aria-live="polite"></div>
+    <p class="note">简历解析仅在本地浏览器完成；当前支持 txt/md/json。PDF/DOCX 请先另存或复制为文本后导入。</p>
+
+    <form id="profileForm" autocomplete="off">
+      <div id="sections"></div>
+    </form>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>
